@@ -4,7 +4,9 @@ from torch import nn,optim
 import numpy as np
 from vae import VAE
 from rnn_mdn import RNN
+from rnn_mdn import MDRNN
 import time
+from rnn_mdn import mdn_loss
 
 num_eps=100
 max_steps=300
@@ -12,19 +14,22 @@ input_dim=8
 z_dim=16
 action_dim=4
 hidden_dim=32
+k_mix=5
 lr=1e-3
 
 vae=VAE(input_dim=input_dim,z_dim=z_dim,hidden_dim=hidden_dim)
-rnn=RNN(z_dim=z_dim,hidden_dim=hidden_dim,action_dim=action_dim)
+#rnn=RNN(z_dim=z_dim,hidden_dim=hidden_dim,action_dim=action_dim)
+mdrnn=MDRNN(z_dim=z_dim,hidden_dim=hidden_dim,action_dim=action_dim,k=k_mix)
 
 vae.eval() #freeze
-rnn.train() #train
+for param in vae.parameters():
+    vae.requires_grad=False
+mdrnn.train() #train
+#criterion=nn.MSELoss()
+optimizer=optim.Adam(mdrnn.parameters(),lr=lr)
 
-criterion=nn.MSELoss()
-optimizer=optim.Adam(rnn.parameters(),lr=lr)
 
 env=gym.make('LunarLander-v3',render_mode='human')
-
 state=None
 for episode in range(num_eps):
     state,_=env.reset()
@@ -48,18 +53,20 @@ for episode in range(num_eps):
 
         mu_next, log_var_next = vae.encode(next_state_tensor)
         z_next = vae.reparameterize(mu_next, log_var_next)        # Ground truth
-        z_next=z_next.detach() #here also same remove the past gradients so that we can use it in RNN
+        #z_next=z_next.detach() #here also same remove the past gradients so that we can use it in RNN
+        # z_next_pred=rnn(z_t,action,hidden)
+        pi,mu_pred,log_var_pred,hidden=mdrnn(z_t,action,hidden)
+        hidden = tuple(h.detach() for h in hidden)
 
-        z_next_pred=rnn(z_t,action,hidden)
-
-        loss=criterion(z_next,z_next_pred)
+        loss=mdn_loss(pi,mu_pred,log_var_pred,z_next)
         episode_loss+=loss.item()
+
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        hidden=None
+        #hidden=None
         state=next_state_tensor
 
         if terminated or truncated:
